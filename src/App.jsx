@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 
 // ─── Auth Users & Roles ────────────────────────────────────────────────────────
 // Roles: admin = full access | developer = read + limited edit, no delete | user = read-only
@@ -3720,7 +3720,7 @@ function ProfileModal({ user, users, setUsers, onClose, showToast }) {
 }
 
 // ── localStorage helpers ─────────────────────────────────────────────────────
-const lsAvailable = (() => { try { localStorage.setItem("__t","1"); localStorage.removeItem("__t"); return true; } catch { return false; } })();
+const lsAvailable = (() => { try { const k="__ls_test__"; window.localStorage.setItem(k,"1"); window.localStorage.removeItem(k); return true; } catch(e) { return false; } })();
 
 function usePersisted(key, fallback) {
   const [val, setVal] = useState(() => {
