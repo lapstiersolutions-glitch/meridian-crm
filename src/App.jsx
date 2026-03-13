@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 
 // ─── Auth Users & Roles ────────────────────────────────────────────────────────
 // Roles: admin = full access | developer = read + limited edit, no delete | user = read-only
