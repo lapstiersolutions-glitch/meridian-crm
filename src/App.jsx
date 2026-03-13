@@ -3448,7 +3448,7 @@ function SettingsView({ currentUser, users, setUsers, roleConfig, setRoleConfig,
                     </button>
                   : <div style={{ display:"flex",alignItems:"center",gap:10 }}>
                       <span style={{ fontSize:12,color:"#dc2626",fontWeight:600 }}>Are you sure? This cannot be undone.</span>
-                      <button onClick={()=>{ if(setCompanies)setCompanies([]); if(setContacts)setContacts([]); if(setTasks)setTasks([]); setConfirmReset(false); showToast("All data reset"); }}
+                      <button onClick={()=>{ if(setCompanies)setCompanies([]); if(setContacts)setContacts([]); if(setTasks)setTasks([]); try{["crm_contacts","crm_companies","crm_tasks"].forEach(k=>localStorage.removeItem(k));}catch{} setConfirmReset(false); showToast("All data reset"); }}
                         style={{ padding:"7px 16px",borderRadius:9,border:"none",background:"#dc2626",color:"#fff",cursor:"pointer",fontSize:12,fontFamily:"'DM Sans',sans-serif",fontWeight:700 }}>
                         Yes, Reset
                       </button>
@@ -3719,9 +3719,28 @@ function ProfileModal({ user, users, setUsers, onClose, showToast }) {
   );
 }
 
+// ── localStorage helpers ─────────────────────────────────────────────────────
+const lsAvailable = (() => { try { localStorage.setItem("__t","1"); localStorage.removeItem("__t"); return true; } catch { return false; } })();
+
+function usePersisted(key, fallback) {
+  const [val, setVal] = useState(() => {
+    if (!lsAvailable) return fallback;
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; }
+    catch { return fallback; }
+  });
+  const setPersisted = (next) => {
+    setVal(prev => {
+      const resolved = typeof next === "function" ? next(prev) : next;
+      if (lsAvailable) { try { localStorage.setItem(key, JSON.stringify(resolved)); } catch {} }
+      return resolved;
+    });
+  };
+  return [val, setPersisted];
+}
+
 function CRMApp({ currentUser, onLogout, roleConfig, setRoleConfig }) {
-  const [users, setUsers] = useState(USERS);
-  const [prefs, setPrefs] = useState({
+  const [users, setUsers]       = usePersisted("crm_users", USERS);
+  const [prefs, setPrefs]       = usePersisted("crm_prefs", {
     defaultCountry: "US",
     dateFormat: "YYYY-MM-DD",
     timeFormat: "12h",
@@ -3730,10 +3749,10 @@ function CRMApp({ currentUser, onLogout, roleConfig, setRoleConfig }) {
     autoTaskDays: [5, 7, 10],
   });
   const rc = roleConfig[currentUser.role] || roleConfig.user;
-  const [tab,setTab] = useState("dashboard");
-  const [contacts,setContacts] = useState(initialContacts);
-  const [companies,setCompanies] = useState(initialCompanies);
-  const [tasks,setTasks] = useState(initialTasks);
+  const [tab,setTab]            = useState("dashboard");
+  const [contacts,setContacts]  = usePersisted("crm_contacts", initialContacts);
+  const [companies,setCompanies]= usePersisted("crm_companies", initialCompanies);
+  const [tasks,setTasks]        = usePersisted("crm_tasks", initialTasks);
   const [toast,setToast] = useState(null);
   const [highlightCompanyId,setHighlightCompanyId] = useState(null);
   const [highlightContactId,setHighlightContactId] = useState(null);
@@ -3971,8 +3990,27 @@ function CRMApp({ currentUser, onLogout, roleConfig, setRoleConfig }) {
 }
 
 export default function CRM() {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [roleConfig, setRoleConfig] = useState(ROLE_CONFIG);
-  if (!currentUser) return <LoginScreen onLogin={setCurrentUser} roleConfig={roleConfig}/>;
-  return <CRMApp currentUser={currentUser} onLogout={()=>setCurrentUser(null)} roleConfig={roleConfig} setRoleConfig={setRoleConfig}/>;
+  const [currentUser, setCurrentUser] = useState(() => {
+    if (!lsAvailable) return null;
+    try { const s = localStorage.getItem("crm_currentUser"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
+  const [roleConfig, setRoleConfig] = useState(() => {
+    if (!lsAvailable) return ROLE_CONFIG;
+    try { const s = localStorage.getItem("crm_roleConfig"); return s ? JSON.parse(s) : ROLE_CONFIG; } catch { return ROLE_CONFIG; }
+  });
+  const persistRoleConfig = (next) => {
+    const resolved = typeof next === "function" ? next(roleConfig) : next;
+    if (lsAvailable) { try { localStorage.setItem("crm_roleConfig", JSON.stringify(resolved)); } catch {} }
+    setRoleConfig(resolved);
+  };
+  const handleLogin = (user) => {
+    if (lsAvailable) { try { localStorage.setItem("crm_currentUser", JSON.stringify(user)); } catch {} }
+    setCurrentUser(user);
+  };
+  const handleLogout = () => {
+    if (lsAvailable) { try { localStorage.removeItem("crm_currentUser"); } catch {} }
+    setCurrentUser(null);
+  };
+  if (!currentUser) return <LoginScreen onLogin={handleLogin} roleConfig={roleConfig}/>;
+  return <CRMApp currentUser={currentUser} onLogout={handleLogout} roleConfig={roleConfig} setRoleConfig={persistRoleConfig}/>;
 }
