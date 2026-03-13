@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.local
+.env.production
+
+# Visual Studio
+.vs/
+*.user
+*.suo
