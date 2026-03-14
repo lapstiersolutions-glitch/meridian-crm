@@ -1,5 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 
+// ── API Configuration ─────────────────────────────────────────────────────────
+const API_URL = "http://localhost:3001/api";
+
+const api = {
+  get:    (path)       => fetch(`${API_URL}${path}`).then(r=>r.json()),
+  post:   (path, body) => fetch(`${API_URL}${path}`, { method:"POST",   headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }).then(r=>r.json()),
+  put:    (path, body) => fetch(`${API_URL}${path}`, { method:"PUT",    headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }).then(r=>r.json()),
+  delete: (path)       => fetch(`${API_URL}${path}`, { method:"DELETE" }).then(r=>r.json()),
+};
+
 // ─── Auth Users & Roles ────────────────────────────────────────────────────────
 // Roles: admin = full access | developer = read + limited edit, no delete | user = read-only
 const USERS = [
@@ -79,14 +89,19 @@ function LoginScreen({ onLogin, roleConfig=ROLE_CONFIG, users=USERS }) {
   const [fpError, setFpError] = useState("");
   const [showHint, setShowHint] = useState(false);
 
-  const handle = () => {
+  const handle = async () => {
     setError("");
     setLoading(true);
-    setTimeout(() => {
+    try {
+      const result = await api.post("/login", { email: email.trim(), password });
+      if (result.error) { setError("Invalid email or password."); setLoading(false); }
+      else { onLogin(result); }
+    } catch(e) {
+      // fallback to local users if API not available
       const u = users.find(u => u.email === email.trim() && u.password === password);
       if (u) { onLogin(u); }
-      else { setError("Invalid email or password."); setLoading(false); }
-    }, 600);
+      else { setError("Invalid email or password. (API offline — check server)"); setLoading(false); }
+    }
   };
 
   const quickLogin = (u) => { setEmail(u.email); setPassword(u.password); setError(""); setFpStep("idle"); };
@@ -3739,25 +3754,88 @@ function usePersisted(key, fallback) {
 }
 
 function CRMApp({ currentUser, onLogout, roleConfig, setRoleConfig }) {
-  const [users, setUsers]       = usePersisted("crm_users", USERS);
-  const [prefs, setPrefs]       = usePersisted("crm_prefs", {
-    defaultCountry: "US",
-    dateFormat: "YYYY-MM-DD",
-    timeFormat: "12h",
-    defaultTaskType: "Follow-up Call",
-    overdueAlerts: true,
-    autoTaskDays: [5, 7, 10],
+  const [users, setUsers]         = useState(USERS);
+  const [prefs, setPrefs]         = usePersisted("crm_prefs", {
+    defaultCountry: "US", dateFormat: "YYYY-MM-DD", timeFormat: "12h",
+    defaultTaskType: "Follow-up Call", overdueAlerts: true, autoTaskDays: [5, 7, 10],
   });
   const rc = roleConfig[currentUser.role] || roleConfig.user;
-  const [tab,setTab]            = useState("dashboard");
-  const [contacts,setContacts]  = usePersisted("crm_contacts", initialContacts);
-  const [companies,setCompanies]= usePersisted("crm_companies", initialCompanies);
-  const [tasks,setTasks]        = usePersisted("crm_tasks", initialTasks);
-  const [toast,setToast] = useState(null);
+  const [tab,setTab]              = useState("dashboard");
+  const [contacts,setContacts]    = useState(initialContacts);
+  const [companies,setCompanies]  = useState(initialCompanies);
+  const [tasks,setTasks]          = useState(initialTasks);
+  const [loading, setLoading]     = useState(true);
+  const [apiOnline, setApiOnline] = useState(false);
+  const [toast,setToast]          = useState(null);
   const [highlightCompanyId,setHighlightCompanyId] = useState(null);
   const [highlightContactId,setHighlightContactId] = useState(null);
   const [triggerAdd,setTriggerAdd] = useState(0);
   const [showUserMenu, setShowUserMenu] = useState(false);
+
+  // ── Load all data from API on mount ────────────────────────────────────────
+  useEffect(() => {
+    const loadAll = async () => {
+      try {
+        const [c, co, t, u] = await Promise.all([
+          api.get("/contacts"),
+          api.get("/companies"),
+          api.get("/tasks"),
+          api.get("/users"),
+        ]);
+        if (Array.isArray(c))  setContacts(c);
+        if (Array.isArray(co)) setCompanies(co);
+        if (Array.isArray(t))  setTasks(t.map(tk => ({ ...tk, done: tk.done === true || tk.done === 1 })));
+        if (Array.isArray(u))  setUsers(u);
+        // load prefs
+        const p = await api.get(`/preferences/${currentUser.id}`);
+        if (p && !p.error) setPrefs({
+          defaultCountry:  p.defaultCountry  || "US",
+          dateFormat:      p.dateFormat       || "YYYY-MM-DD",
+          timeFormat:      p.timeFormat       || "12h",
+          defaultTaskType: p.defaultTaskType  || "Follow-up Call",
+          overdueAlerts:   p.overdueAlerts === 1 || p.overdueAlerts === true,
+          autoTaskDays:    [p.autoTaskDay1||5, p.autoTaskDay2||7, p.autoTaskDay3||10],
+        });
+        setApiOnline(true);
+      } catch(e) {
+        console.warn("API offline, using local data:", e.message);
+        setApiOnline(false);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadAll();
+  }, [currentUser.id]);
+
+  // ── API-aware setters ───────────────────────────────────────────────────────
+  const apiSetContacts = (updater) => {
+    setContacts(prev => typeof updater === "function" ? updater(prev) : updater);
+  };
+  const apiSetCompanies = (updater) => {
+    setCompanies(prev => typeof updater === "function" ? updater(prev) : updater);
+  };
+  const apiSetTasks = (updater) => {
+    setTasks(prev => typeof updater === "function" ? updater(prev) : updater);
+  };
+  const apiSetUsers = (updater) => {
+    setUsers(prev => typeof updater === "function" ? updater(prev) : updater);
+  };
+  const apiSetPrefs = async (updater) => {
+    setPrefs(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      if (apiOnline) api.put(`/preferences/${currentUser.id}`, next).catch(()=>{});
+      return next;
+    });
+  };
+
+  // Loading screen
+  if (loading) return (
+    <div style={{ display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",flexDirection:"column",gap:16,background:"#f7f8fa",fontFamily:"'DM Sans',sans-serif" }}>
+      <div style={{ width:48,height:48,borderRadius:14,background:"linear-gradient(135deg,#4a84c0,#3a6ea8)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24 }}>◈</div>
+      <div style={{ fontSize:16,fontWeight:700,color:"#3a6ea8" }}>Loading Meridian CRM...</div>
+      <div style={{ fontSize:13,color:"#9298a4" }}>Connecting to database</div>
+    </div>
+  );
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
   const [showGlobalResults, setShowGlobalResults] = useState(false);
@@ -3840,6 +3918,10 @@ function CRMApp({ currentUser, onLogout, roleConfig, setRoleConfig }) {
           <div style={{ display:"flex",alignItems:"center",gap:10 }}>
             <div style={{ width:34,height:34,borderRadius:10,background:"linear-gradient(135deg,#4a84c0,#3a6ea8)",display:"flex",alignItems:"center",justifyContent:"center" }}><span style={{ fontSize:17 }}>◈</span></div>
             <h1 style={{ margin:0,fontFamily:"'Playfair Display',serif",fontSize:20,color:"#f2f3f5",fontWeight:700 }}>Meridian CRM</h1>
+          </div>
+          <div title={apiOnline?"Connected to SQL Server":"Using local data"} style={{ display:"flex",alignItems:"center",gap:4,background:"rgba(255,255,255,0.07)",borderRadius:20,padding:"3px 8px" }}>
+            <div style={{ width:7,height:7,borderRadius:"50%",background:apiOnline?"#27924a":"#f59e0b",boxShadow:apiOnline?"0 0 6px #27924a":"0 0 6px #f59e0b" }}/>
+            <span style={{ fontSize:10,fontWeight:700,color:apiOnline?"#86efac":"#fcd34d",letterSpacing:"0.05em" }}>{apiOnline?"SQL Server":"Local"}</span>
           </div>
           <div style={{ width:1,height:26,background:"rgba(255,255,255,0.2)",margin:"0 2px" }}/>
           <nav style={{ display:"flex",gap:2 }}>
@@ -3976,10 +4058,10 @@ function CRMApp({ currentUser, onLogout, roleConfig, setRoleConfig }) {
       </div>
 
       <div style={{ padding:"0 32px 40px" }}>
-        {tab==="dashboard"&&<DashboardView tasks={tasks} contacts={contacts} companies={companies} setTasks={setTasks} showToast={showToast} triggerAdd={triggerAdd} rc={rc} roleConfig={roleConfig} onViewContact={handleViewContact} onViewCompany={handleViewCompany} users={users} currentUser={currentUser} prefs={prefs}/>}
-        {tab==="companies"&&<CompaniesView companies={companies} contacts={contacts} setCompanies={setCompanies} setContacts={setContacts} tasks={tasks} setTasks={setTasks} showToast={showToast} onViewContacts={handleViewContact} triggerAdd={triggerAdd} rc={rc} highlightId={highlightCompanyId} clearHighlight={()=>setHighlightCompanyId(null)} highlightContactId={highlightContactId} clearHighlightContact={()=>setHighlightContactId(null)} currentUser={currentUser} users={users} prefs={prefs}/>}
+        {tab==="dashboard"&&<DashboardView tasks={tasks} contacts={contacts} companies={companies} setTasks={apiSetTasks} showToast={showToast} triggerAdd={triggerAdd} rc={rc} roleConfig={roleConfig} onViewContact={handleViewContact} onViewCompany={handleViewCompany} users={users} currentUser={currentUser} prefs={prefs}/>}
+        {tab==="companies"&&<CompaniesView companies={companies} contacts={contacts} setCompanies={apiSetCompanies} setContacts={apiSetContacts} tasks={tasks} setTasks={apiSetTasks} showToast={showToast} onViewContacts={handleViewContact} triggerAdd={triggerAdd} rc={rc} highlightId={highlightCompanyId} clearHighlight={()=>setHighlightCompanyId(null)} highlightContactId={highlightContactId} clearHighlightContact={()=>setHighlightContactId(null)} currentUser={currentUser} users={users} prefs={prefs} apiOnline={apiOnline} api={api}/>}
         {tab==="reports"&&<ReportsView contacts={contacts} companies={companies} tasks={tasks} users={users} currentUser={currentUser} rc={rc} onViewContact={handleViewContact} onViewCompany={handleViewCompany}/>}
-        {tab==="settings"&&currentUser.role==="admin"&&<SettingsView currentUser={currentUser} users={users} setUsers={setUsers} roleConfig={roleConfig} setRoleConfig={setRoleConfig} showToast={showToast} prefs={prefs} setPrefs={setPrefs} companies={companies} contacts={contacts} tasks={tasks} setCompanies={setCompanies} setContacts={setContacts} setTasks={setTasks}/>}
+        {tab==="settings"&&currentUser.role==="admin"&&<SettingsView currentUser={currentUser} users={users} setUsers={apiSetUsers} roleConfig={roleConfig} setRoleConfig={setRoleConfig} showToast={showToast} prefs={prefs} setPrefs={apiSetPrefs} companies={companies} contacts={contacts} tasks={tasks} setCompanies={apiSetCompanies} setContacts={apiSetContacts} setTasks={apiSetTasks} apiOnline={apiOnline} api={api}/>}
       </div>
 
       {showUserMenu&&<div style={{ position:"fixed",inset:0,zIndex:499 }} onClick={()=>setShowUserMenu(false)}/>}
